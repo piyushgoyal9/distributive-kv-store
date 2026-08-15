@@ -6,21 +6,27 @@
 
 using namespace std;
 
-int main() {
-
+int main()
+{
     // 1. Start Winsock
     WSADATA wsaData;
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
         cout << "WSAStartup failed\n";
         return 1;
     }
 
 
     // 2. Create client socket
-    SOCKET clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET clientSocket = socket(
+        AF_INET,
+        SOCK_STREAM,
+        0
+    );
 
-    if (clientSocket == INVALID_SOCKET) {
+    if (clientSocket == INVALID_SOCKET)
+    {
         cout << "Socket creation failed\n";
         WSACleanup();
         return 1;
@@ -47,8 +53,8 @@ int main() {
         clientSocket,
         (sockaddr*)&serverAddress,
         sizeof(serverAddress)
-    ) == SOCKET_ERROR) {
-
+    ) == SOCKET_ERROR)
+    {
         cout << "Connection failed\n";
 
         closesocket(clientSocket);
@@ -60,9 +66,17 @@ int main() {
     cout << "Connected to server!\n";
 
 
-    // 5. Keep sending commands
-    while (true) {
+    // ==========================================
+    // RESPONSE BUFFER
+    // ==========================================
 
+    string inputBuffer;
+    char buffer[1024];
+
+
+    // 5. Keep sending commands
+    while (true)
+    {
         string command;
 
         cout << "> ";
@@ -70,12 +84,18 @@ int main() {
 
 
         // Exit command
-        if (command == "exit") {
+        if (command == "exit")
+        {
             break;
         }
 
 
-        // Send command
+        // ==========================================
+        // SEND COMMAND
+        // ==========================================
+
+        command += '\n';
+
         send(
             clientSocket,
             command.c_str(),
@@ -84,27 +104,65 @@ int main() {
         );
 
 
-        // Receive response
-        char buffer[1024];
+        // ==========================================
+        // RECEIVE RESPONSE
+        // ==========================================
 
-        int bytesReceived = recv(
-            clientSocket,
-            buffer,
-            sizeof(buffer) - 1,
-            0
-        );
+        while (true)
+        {
+            // Look for complete response
+            size_t newlinePosition =
+                inputBuffer.find('\n');
 
 
-        if (bytesReceived > 0) {
+            // We already have a complete response
+            if (newlinePosition != string::npos)
+            {
+                string response =
+                    inputBuffer.substr(
+                        0,
+                        newlinePosition
+                    );
 
-            buffer[bytesReceived] = '\0';
 
-            cout << buffer << endl;
+                // Remove response + '\n'
+                inputBuffer.erase(
+                    0,
+                    newlinePosition + 1
+                );
 
-        } else {
 
-            cout << "Server disconnected.\n";
-            break;
+                cout << response << endl;
+
+                break;
+            }
+
+
+            // Need more data
+            int bytesReceived = recv(
+                clientSocket,
+                buffer,
+                sizeof(buffer),
+                0
+            );
+
+
+            if (bytesReceived <= 0)
+            {
+                cout << "Server disconnected.\n";
+
+                closesocket(clientSocket);
+                WSACleanup();
+
+                return 0;
+            }
+
+
+            // Add received bytes to persistent buffer
+            inputBuffer.append(
+                buffer,
+                bytesReceived
+            );
         }
     }
 
