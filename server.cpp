@@ -6,61 +6,165 @@
 #include <sstream>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <fstream>
 
 #pragma comment(lib, "ws2_32.lib")
 
 using namespace std;
 
-// Handles one connected client
+
+// =====================================================
+// SAVE DATABASE TO FILE
+// =====================================================
+
+void saveDatabase(unordered_map<string, string>& db)
+{
+    cout << "saveDatabase() called!" << endl;
+
+    ofstream file("database.txt");
+
+    if (!file.is_open())
+    {
+        cout << "ERROR: Could not open database.txt" << endl;
+        return;
+    }
+
+    cout << "File opened successfully!" << endl;
+
+    for (auto& pair : db)
+    {
+        cout << "Writing: "
+             << pair.first
+             << " = "
+             << pair.second
+             << endl;
+
+        file << pair.first << " "
+             << pair.second << "\n";
+    }
+
+    file.flush();
+
+    file.close();
+
+    cout << "Database saved!" << endl;
+}
+
+
+// =====================================================
+// LOAD DATABASE FROM FILE
+// =====================================================
+
+void loadDatabase(unordered_map<string, string>& db)
+{
+    ifstream file("database.txt");
+
+    if (!file.is_open())
+    {
+        cout << "No existing database found.\n";
+        return;
+    }
+
+    string key;
+    string value;
+
+    while (file >> key >> value)
+    {
+        db[key] = value;
+    }
+
+    file.close();
+
+    cout << "Database loaded!\n";
+}
+
+
+// =====================================================
+// HANDLE ONE CLIENT
+// =====================================================
+
 void handleClient(
     SOCKET clientSocket,
-    unordered_map<string, string> &db,
-    mutex &dbMutex)
+    unordered_map<string, string>& db,
+    mutex& dbMutex)
 {
     char buffer[1024];
+
     string inputBuffer;
+
 
     while (true)
     {
+        // =================================================
+        // RECEIVE DATA
+        // =================================================
+
         int bytesReceived = recv(
             clientSocket,
             buffer,
             sizeof(buffer),
-            0);
+            0
+        );
+
 
         if (bytesReceived <= 0)
         {
             break;
         }
 
-        // Add received bytes to our persistent buffer
-        inputBuffer.append(buffer, bytesReceived);
 
-        // Process every complete command
+        // Add received bytes to persistent buffer
+
+        inputBuffer.append(
+            buffer,
+            bytesReceived
+        );
+
+
+        // =================================================
+        // PROCESS COMPLETE COMMANDS
+        // =================================================
+
         while (true)
         {
-            size_t newlinePosition = inputBuffer.find('\n');
+            size_t newlinePosition =
+                inputBuffer.find('\n');
 
-            // No complete command yet
+
+            // Command is incomplete
+
             if (newlinePosition == string::npos)
             {
                 break;
             }
 
-            // Extract one complete command
-            string command =
-                inputBuffer.substr(0, newlinePosition);
 
-            // Remove command + '\n' from buffer
+            // Extract command
+
+            string command =
+                inputBuffer.substr(
+                    0,
+                    newlinePosition
+                );
+
+
+            // Remove command + newline
+
             inputBuffer.erase(
                 0,
-                newlinePosition + 1);
+                newlinePosition + 1
+            );
+
 
             cout << "Command: "
                  << command
                  << endl;
 
-            // Parse command
+
+            // =================================================
+            // PARSE COMMAND
+            // =================================================
+
             stringstream ss(command);
 
             string operation;
@@ -68,15 +172,17 @@ void handleClient(
             string value;
             string something;
 
+
             ss >> operation;
 
-            // =========================
+
+            // =================================================
             // PING
-            // =========================
+            // =================================================
 
             if (operation == "PING")
             {
-                if ((ss >> something))
+                if (ss >> something)
                 {
                     string response = "ERROR\n";
 
@@ -84,7 +190,8 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
                 else
                 {
@@ -94,17 +201,24 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
             }
 
-            // =========================
+
+            // =================================================
             // SET
-            // =========================
+            // =================================================
 
             else if (operation == "SET")
             {
-                if (!(ss >> key) || !(ss >> value) || (ss >> something))
+                // SET requires:
+                // SET key value
+
+                if (!(ss >> key) ||
+                    !(ss >> value) ||
+                    (ss >> something))
                 {
                     string response = "ERROR\n";
 
@@ -112,14 +226,20 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
                 else
-
                 {
-                    lock_guard<mutex> lock(dbMutex);
+                    {
+                        lock_guard<mutex> lock(dbMutex);
 
-                    db[key] = value;
+                        db[key] = value;
+
+                        // Save updated database
+                        saveDatabase(db);
+                    }
+
 
                     string response = "OK\n";
 
@@ -127,18 +247,23 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
             }
 
-            // =========================
+
+            // =================================================
             // GET
-            // =========================
+            // =================================================
 
             else if (operation == "GET")
             {
+                // GET requires:
+                // GET key
 
-                if (!(ss >> key)|| (ss >> something))
+                if (!(ss >> key) ||
+                    (ss >> something))
                 {
                     string response = "ERROR\n";
 
@@ -146,18 +271,24 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
                 else
                 {
                     string response;
 
+
                     {
                         lock_guard<mutex> lock(dbMutex);
 
-                        if (db.find(key) != db.end())
+
+                        auto it = db.find(key);
+
+
+                        if (it != db.end())
                         {
-                            response = db[key];
+                            response = it->second;
                         }
                         else
                         {
@@ -165,19 +296,31 @@ void handleClient(
                         }
                     }
 
+
                     response += '\n';
+
 
                     send(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
             }
 
+
+            // =================================================
+            // DEL
+            // =================================================
+
             else if (operation == "DEL")
             {
-                if (!(ss >> key))
+                // DEL requires:
+                // DEL key
+
+                if (!(ss >> key) ||
+                    (ss >> something))
                 {
                     string response = "ERROR\n";
 
@@ -185,19 +328,28 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
                 else
                 {
-
                     string response;
+
 
                     {
                         lock_guard<mutex> lock(dbMutex);
 
-                        if (db.find(key) != db.end())
+
+                        auto it = db.find(key);
+
+
+                        if (it != db.end())
                         {
-                            db.erase(key);
+                            db.erase(it);
+
+                            // Save updated database
+                            saveDatabase(db);
+
                             response = "OK";
                         }
                         else
@@ -206,18 +358,31 @@ void handleClient(
                         }
                     }
 
+
                     response += '\n';
+
 
                     send(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
             }
+
+
+            // =================================================
+            // EXISTS
+            // =================================================
+
             else if (operation == "EXISTS")
             {
-                if (!(ss >> key))
+                // EXISTS requires:
+                // EXISTS key
+
+                if (!(ss >> key) ||
+                    (ss >> something))
                 {
                     string response = "ERROR\n";
 
@@ -225,14 +390,17 @@ void handleClient(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
                 else
                 {
                     string response;
 
+
                     {
                         lock_guard<mutex> lock(dbMutex);
+
 
                         if (db.find(key) != db.end())
                         {
@@ -244,65 +412,101 @@ void handleClient(
                         }
                     }
 
+
                     response += '\n';
+
 
                     send(
                         clientSocket,
                         response.c_str(),
                         response.size(),
-                        0);
+                        0
+                    );
                 }
             }
 
-            // =========================
+
+            // =================================================
             // UNKNOWN COMMAND
-            // =========================
+            // =================================================
 
             else
             {
-                string response = "UNKNOWN_COMMAND\n";
+                string response =
+                    "UNKNOWN_COMMAND\n";
+
 
                 send(
                     clientSocket,
                     response.c_str(),
                     response.size(),
-                    0);
+                    0
+                );
             }
         }
     }
 
-    // Client disconnected
+
+    // =================================================
+    // CLIENT DISCONNECTED
+    // =================================================
+
     closesocket(clientSocket);
 
     cout << "Client disconnected.\n";
 }
 
+
+// =====================================================
+// MAIN
+// =====================================================
+
 int main()
 {
-    // Our shared key-value database
+    // =================================================
+    // OUR SHARED KEY-VALUE DATABASE
+    // =================================================
+
     unordered_map<string, string> db;
+
     mutex dbMutex;
 
-    // ========================================
-    // 1. Start Winsock
-    // ========================================
+
+    // =================================================
+    // LOAD DATABASE FROM DISK
+    // =================================================
+
+    loadDatabase(db);
+
+
+    // =================================================
+    // 1. START WINSOCK
+    // =================================================
 
     WSADATA wsaData;
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+
+    if (WSAStartup(
+            MAKEWORD(2, 2),
+            &wsaData) != 0)
     {
         cout << "WSAStartup failed\n";
+
         return 1;
     }
 
-    // ========================================
-    // 2. Create socket
-    // ========================================
 
-    SOCKET serverSocket = socket(
-        AF_INET,
-        SOCK_STREAM,
-        0);
+    // =================================================
+    // 2. CREATE SERVER SOCKET
+    // =================================================
+
+    SOCKET serverSocket =
+        socket(
+            AF_INET,
+            SOCK_STREAM,
+            0
+        );
+
 
     if (serverSocket == INVALID_SOCKET)
     {
@@ -313,28 +517,38 @@ int main()
         return 1;
     }
 
+
     cout << "Socket created successfully!\n";
 
-    // ========================================
-    // 3. Create server address
-    // ========================================
+
+    // =================================================
+    // 3. SERVER ADDRESS
+    // =================================================
 
     sockaddr_in serverAddress{};
 
-    serverAddress.sin_family = AF_INET;
 
-    serverAddress.sin_port = htons(5000);
+    serverAddress.sin_family =
+        AF_INET;
 
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
 
-    // ========================================
-    // 4. Bind socket to IP + port
-    // ========================================
+    serverAddress.sin_port =
+        htons(5000);
+
+
+    serverAddress.sin_addr.s_addr =
+        INADDR_ANY;
+
+
+    // =================================================
+    // 4. BIND
+    // =================================================
 
     if (bind(
             serverSocket,
-            (sockaddr *)&serverAddress,
-            sizeof(serverAddress)) == SOCKET_ERROR)
+            (sockaddr*)&serverAddress,
+            sizeof(serverAddress))
+        == SOCKET_ERROR)
     {
         cout << "Bind failed\n";
 
@@ -345,13 +559,18 @@ int main()
         return 1;
     }
 
+
     cout << "Server bound to port 5000\n";
 
-    // ========================================
-    // 5. Start listening
-    // ========================================
 
-    if (listen(serverSocket, 5) == SOCKET_ERROR)
+    // =================================================
+    // 5. LISTEN
+    // =================================================
+
+    if (listen(
+            serverSocket,
+            5)
+        == SOCKET_ERROR)
     {
         cout << "Listen failed\n";
 
@@ -362,18 +581,23 @@ int main()
         return 1;
     }
 
+
     cout << "Server is listening on port 5000...\n";
 
-    // ========================================
-    // 6. Accept clients continuously
-    // ========================================
+
+    // =================================================
+    // 6. ACCEPT CLIENTS
+    // =================================================
 
     while (true)
     {
-        SOCKET clientSocket = accept(
-            serverSocket,
-            nullptr,
-            nullptr);
+        SOCKET clientSocket =
+            accept(
+                serverSocket,
+                nullptr,
+                nullptr
+            );
+
 
         if (clientSocket == INVALID_SOCKET)
         {
@@ -382,27 +606,37 @@ int main()
             continue;
         }
 
+
         cout << "Client connected!\n";
 
-        // Create a new thread for this client
+
+        // Create thread for client
+
         thread clientThread(
             handleClient,
             clientSocket,
-            ref(db), ref(dbMutex));
+            ref(db),
+            ref(dbMutex)
+        );
 
-        // Let the thread run independently
+
+        // Let thread run independently
+
         clientThread.detach();
     }
 
-    // ========================================
-    // Cleanup
-    // ========================================
+
+    // =================================================
+    // CLEANUP
+    // =================================================
 
     closesocket(serverSocket);
 
     WSACleanup();
 
+
     cout << "Server stopped.\n";
+
 
     return 0;
 }
