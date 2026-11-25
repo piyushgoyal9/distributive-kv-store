@@ -1,3 +1,4 @@
+
 #include <iostream>
 #include <unordered_map>
 #include <string>
@@ -7,6 +8,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <fstream>
+
+#include "lru_cache.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -19,8 +22,6 @@ using namespace std;
 
 void saveDatabase(unordered_map<string, string>& db)
 {
-    cout << "saveDatabase() called!" << endl;
-
     ofstream file("database.txt");
 
     if (!file.is_open())
@@ -29,22 +30,13 @@ void saveDatabase(unordered_map<string, string>& db)
         return;
     }
 
-    cout << "File opened successfully!" << endl;
-
     for (auto& pair : db)
     {
-        cout << "Writing: "
-             << pair.first
-             << " = "
-             << pair.second
-             << endl;
-
         file << pair.first << " "
              << pair.second << "\n";
     }
 
     file.flush();
-
     file.close();
 
     cout << "Database saved!" << endl;
@@ -86,12 +78,12 @@ void loadDatabase(unordered_map<string, string>& db)
 void handleClient(
     SOCKET clientSocket,
     unordered_map<string, string>& db,
+    LRUCache& cache,
     mutex& dbMutex)
 {
     char buffer[1024];
 
     string inputBuffer;
-
 
     while (true)
     {
@@ -106,12 +98,10 @@ void handleClient(
             0
         );
 
-
         if (bytesReceived <= 0)
         {
             break;
         }
-
 
         // Add received bytes to persistent buffer
 
@@ -130,14 +120,12 @@ void handleClient(
             size_t newlinePosition =
                 inputBuffer.find('\n');
 
-
             // Command is incomplete
 
             if (newlinePosition == string::npos)
             {
                 break;
             }
-
 
             // Extract command
 
@@ -147,14 +135,12 @@ void handleClient(
                     newlinePosition
                 );
 
-
             // Remove command + newline
 
             inputBuffer.erase(
                 0,
                 newlinePosition + 1
             );
-
 
             cout << "Command: "
                  << command
@@ -171,7 +157,6 @@ void handleClient(
             string key;
             string value;
             string something;
-
 
             ss >> operation;
 
@@ -213,9 +198,6 @@ void handleClient(
 
             else if (operation == "SET")
             {
-                // SET requires:
-                // SET key value
-
                 if (!(ss >> key) ||
                     !(ss >> value) ||
                     (ss >> something))
@@ -234,12 +216,15 @@ void handleClient(
                     {
                         lock_guard<mutex> lock(dbMutex);
 
+                        // Update persistent database
                         db[key] = value;
 
-                        // Save updated database
+                        // Update LRU cache
+                        cache.set(key, value);
+
+                        // Save database
                         saveDatabase(db);
                     }
-
 
                     string response = "OK\n";
 
@@ -259,9 +244,6 @@ void handleClient(
 
             else if (operation == "GET")
             {
-                // GET requires:
-                // GET key
-
                 if (!(ss >> key) ||
                     (ss >> something))
                 {
@@ -278,27 +260,38 @@ void handleClient(
                 {
                     string response;
 
-
                     {
                         lock_guard<mutex> lock(dbMutex);
 
-
-                        auto it = db.find(key);
-
-
-                        if (it != db.end())
+                        // First check LRU cache
+                        if (cache.get(key, response))
                         {
-                            response = it->second;
+                            cout << "CACHE HIT: "
+                                 << key << endl;
                         }
                         else
                         {
-                            response = "NOT_FOUND";
+                            cout << "CACHE MISS: "
+                                 << key << endl;
+
+                            // Check persistent database
+                            auto it = db.find(key);
+
+                            if (it != db.end())
+                            {
+                                response = it->second;
+
+                                // Load into cache
+                                cache.set(key, response);
+                            }
+                            else
+                            {
+                                response = "NOT_FOUND";
+                            }
                         }
                     }
 
-
                     response += '\n';
-
 
                     send(
                         clientSocket,
@@ -316,9 +309,6 @@ void handleClient(
 
             else if (operation == "DEL")
             {
-                // DEL requires:
-                // DEL key
-
                 if (!(ss >> key) ||
                     (ss >> something))
                 {
@@ -335,17 +325,18 @@ void handleClient(
                 {
                     string response;
 
-
                     {
                         lock_guard<mutex> lock(dbMutex);
 
-
                         auto it = db.find(key);
-
 
                         if (it != db.end())
                         {
+                            // Delete from database
                             db.erase(it);
+
+                            // Delete from LRU cache
+                            cache.remove(key);
 
                             // Save updated database
                             saveDatabase(db);
@@ -358,9 +349,7 @@ void handleClient(
                         }
                     }
 
-
                     response += '\n';
-
 
                     send(
                         clientSocket,
@@ -378,9 +367,6 @@ void handleClient(
 
             else if (operation == "EXISTS")
             {
-                // EXISTS requires:
-                // EXISTS key
-
                 if (!(ss >> key) ||
                     (ss >> something))
                 {
@@ -397,10 +383,8 @@ void handleClient(
                 {
                     string response;
 
-
                     {
                         lock_guard<mutex> lock(dbMutex);
-
 
                         if (db.find(key) != db.end())
                         {
@@ -412,9 +396,7 @@ void handleClient(
                         }
                     }
 
-
                     response += '\n';
-
 
                     send(
                         clientSocket,
@@ -432,9 +414,7 @@ void handleClient(
 
             else
             {
-                string response =
-                    "UNKNOWN_COMMAND\n";
-
+                string response = "UNKNOWN_COMMAND\n";
 
                 send(
                     clientSocket,
@@ -464,10 +444,13 @@ void handleClient(
 int main()
 {
     // =================================================
-    // OUR SHARED KEY-VALUE DATABASE
+    // SHARED DATABASE
     // =================================================
 
     unordered_map<string, string> db;
+
+    // LRU cache with capacity of 1000 entries
+    LRUCache cache(1000);
 
     mutex dbMutex;
 
@@ -484,7 +467,6 @@ int main()
     // =================================================
 
     WSADATA wsaData;
-
 
     if (WSAStartup(
             MAKEWORD(2, 2),
@@ -507,7 +489,6 @@ int main()
             0
         );
 
-
     if (serverSocket == INVALID_SOCKET)
     {
         cout << "Socket creation failed\n";
@@ -516,7 +497,6 @@ int main()
 
         return 1;
     }
-
 
     cout << "Socket created successfully!\n";
 
@@ -527,17 +507,11 @@ int main()
 
     sockaddr_in serverAddress{};
 
+    serverAddress.sin_family = AF_INET;
 
-    serverAddress.sin_family =
-        AF_INET;
+    serverAddress.sin_port = htons(5000);
 
-
-    serverAddress.sin_port =
-        htons(5000);
-
-
-    serverAddress.sin_addr.s_addr =
-        INADDR_ANY;
+    serverAddress.sin_addr.s_addr = INADDR_ANY;
 
 
     // =================================================
@@ -558,7 +532,6 @@ int main()
 
         return 1;
     }
-
 
     cout << "Server bound to port 5000\n";
 
@@ -581,7 +554,6 @@ int main()
         return 1;
     }
 
-
     cout << "Server is listening on port 5000...\n";
 
 
@@ -598,14 +570,12 @@ int main()
                 nullptr
             );
 
-
         if (clientSocket == INVALID_SOCKET)
         {
             cout << "Accept failed\n";
 
             continue;
         }
-
 
         cout << "Client connected!\n";
 
@@ -616,9 +586,9 @@ int main()
             handleClient,
             clientSocket,
             ref(db),
+            ref(cache),
             ref(dbMutex)
         );
-
 
         // Let thread run independently
 
@@ -634,9 +604,7 @@ int main()
 
     WSACleanup();
 
-
     cout << "Server stopped.\n";
-
 
     return 0;
 }

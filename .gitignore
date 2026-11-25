@@ -1,2 +1,10 @@
 *.exe
 .vscode/
+
+# Linux test binaries
+test_lru
+persistence_test
+race_test
+
+# Test data
+test_database.txt

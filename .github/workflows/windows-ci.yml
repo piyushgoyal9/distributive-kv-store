@@ -1,0 +1,27 @@
+name: Windows Build and Integration Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build KV Server
+        shell: pwsh
+        run: |
+          cl /EHsc /std:c++17 server.cpp /Fe:server.exe /link ws2_32.lib
+
+      - name: Run Integration Tests
+        shell: pwsh
+        run: |
+          .\tests\windows_integration.ps1
